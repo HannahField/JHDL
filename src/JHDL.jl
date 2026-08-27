@@ -27,6 +27,8 @@ struct Simulation{G<:Generics,I<:Frame,O<:Frame}
 
     input_path::String
     output_path::String
+    wave_path::String
+
 
     stop_time::String
 
@@ -193,10 +195,13 @@ function GHDL_run(sim::Simulation)::Nothing
     push!(generics, "-gOUTPUT_FILE="*sim.output_path)
 
 
+    wave_args = isempty(sim.wave_path) ? String[] : ["--fst=$(sim.wave_path)"]
+
     run(Cmd(
         `ghdl -r --std=08
             $(sim.testbench.name)
             $generics
+            $wave_args
             --stop-time=$(sim.stop_time)
             --ieee-asserts=disable`;
         dir=build_directory
