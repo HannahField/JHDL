@@ -11,7 +11,6 @@ export simulate
 export verify
 export GHDL_build
 export GHDL_run
-
 abstract type Frame end
 abstract type Generics end
 
@@ -29,7 +28,6 @@ struct Simulation{G<:Generics,I<:Frame,O<:Frame}
     output_path::String
     wave_path::String
 
-
     stop_time::String
 
     input_data::Vector{I}
@@ -38,11 +36,11 @@ struct Simulation{G<:Generics,I<:Frame,O<:Frame}
     tol::AbstractFloat
 end
 
-function parse_frame(::Type{T},fields::AbstractVector{Any}) where T<:Frame
+function parse_frame(::Type{T}, fields::AbstractVector) where T<:Frame
     throw(ArgumentError("parse_frame is not implemented for this Frame type"))
 end
 
-function compare(sim::Simulation{G,I,O},data::O) where {G<:Generics,I<:Frame,O<:Frame}
+function compare(sim::Simulation{G,I,O}, data::O) where {G<:Generics,I<:Frame,O<:Frame}
     throw(ArgumentError("compare is not implemented for this simulation"))
 end
 
@@ -136,8 +134,8 @@ function read_test_data(::Type{T}, filename::AbstractString="results.txt",)::Vec
 
             frame = try
                 parse_frame(T, fields)
-            catch error
-                throw(ArgumentError("Failed to parse line $line_number of \"$filename\"."))*sprint(showerror, error)
+            catch err
+                throw(ArgumentError("Failed to parse line $line_number of \"$filename\"."*sprint(showerror, err)))
             end
             push!(data, frame)
         end
@@ -194,7 +192,6 @@ function GHDL_run(sim::Simulation)::Nothing
     push!(generics, "-gINPUT_FILE="*sim.input_path)
     push!(generics, "-gOUTPUT_FILE="*sim.output_path)
 
-
     wave_args = isempty(sim.wave_path) ? String[] : ["--fst=$(sim.wave_path)"]
 
     run(Cmd(
@@ -202,8 +199,7 @@ function GHDL_run(sim::Simulation)::Nothing
             $(sim.testbench.name)
             $generics
             $wave_args
-            --stop-time=$(sim.stop_time)
-            --ieee-asserts=disable`;
+            --stop-time=$(sim.stop_time)`;
         dir=build_directory
     ))
     return nothing
