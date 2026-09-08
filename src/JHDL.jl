@@ -1,64 +1,45 @@
-module JHDL
+include("testbench.jl")
+using .VHDL
 
-export Frame
-export Generics
-export Testbench
-export Simulation
-export to_Q_format
-export parse_frame
-export compare
-export simulate
-export verify
-export GHDL_build
-export GHDL_run
 abstract type Frame end
-abstract type Generics end
 
-struct Testbench
-    sources::Vector{String}
-    name::String
-    build_directory::String
-end
-
-struct Simulation{G<:Generics,I<:Frame,O<:Frame}
+Base.@kwdef struct Simulation
     testbench::Testbench
-    generics::G
+    sources::Vector{String}
+    build_directory::String="build/"
+    generics::Vector{Generic}
 
-    input_path::String
-    output_path::String
-    wave_path::String
+    wave_path::String="waveform.fst"
+    input_path::String="samples.txt"
+    output_path::String="output.txt"
 
-    stop_time::String
+    stop_time_ms::Int=5
 
-    input_data::Vector{I}
-    expected_data::Vector{O}
-
-    tol::AbstractFloat
+    stims::Vector{PortStim}
 end
 
-function parse_frame(::Type{T}, fields::AbstractVector) where T<:Frame
-    throw(ArgumentError("parse_frame is not implemented for this Frame type"))
-end
-
-function compare(sim::Simulation{G,I,O}, data::O) where {G<:Generics,I<:Frame,O<:Frame}
+function compare(expected::AbstractVector{PortStim}, actual::AbstractVector{PortStim}; tol::Union{Real,Nothing}=nothing)
     throw(ArgumentError("compare is not implemented for this simulation"))
 end
 
-function simulate(sim::Simulation{G,I,O})::Vector{O} where {G<:Generics,I<:Frame,O<:Frame}
-    build_directory = abspath(sim.testbench.build_directory)
+function simulate(sim::Simulation)::AbstractVector{PortStim}
+    build_directory = abspath(sim.build_directory)
 
     input_path = joinpath(build_directory, sim.input_path)
     output_path = joinpath(build_directory, sim.output_path)
+
+    inputs = filter(x -> ((x.dir == In) || (x.dir == InOut)), sim.stims)
+    outputs = filter(x -> ((x.dir == Out) || (x.dir == InOut)), sim.stims)
 
     mkpath(build_directory)
 
     isfile(output_path) && rm(output_path)
 
-    write_test_data(sim.input_data, input_path)
+    write_test_data(inputs, input_path)
 
     println("Building project...")
 
-    GHDL_build(sim.testbench)
+    GHDL_build(sim)
 
     println("Running testbench $(sim.testbench.name)...")
 
@@ -66,19 +47,17 @@ function simulate(sim::Simulation{G,I,O})::Vector{O} where {G<:Generics,I<:Frame
 
     isfile(output_path) || throw(ErrorException("The testbench did not produce \"$(sim.output_path)\""))
 
-    actual_data = read_test_data(O, output_path)
-
-    return actual_data
+    return read_test_data(outputs, output_path)
 end
 
 
-function verify(sim::Simulation{G,I,O})::Bool where {G<:Generics,I<:Frame,O<:Frame}
+function verify(sim::Simulation, expected::AbstractVector{PortStim}, tol::Union{Real,Nothing}=nothing)::Bool
 
-    actual_data = simulate(sim)
+    actual = simulate(sim)
 
     println("Comparing results...")
 
-    passed = compare(sim, actual_data)
+    passed = compare(expected, actual; tol=tol)
 
     println(passed ? "PASS" : "FAIL")
 
@@ -105,65 +84,60 @@ function to_Q_format(x::Real, N::Integer, M::Integer)::BigInt
     return y
 end
 
-write_field(io::IO, value) = print(io, value)
-write_field(io::IO, value::Bool) = print(io, Int(value))
 
-
-function write_test_data(data::AbstractVector{<:Frame}, filename::AbstractString="samples.txt")::Nothing
+function write_test_data(data::AbstractVector{PortStim}, filename::AbstractString="samples.txt")::Nothing
+    N = maximum(map(x -> length(x.value), data))
     open(filename, "w") do io
-        for (line_index, line) in enumerate(data)
-            for (field_index, field) in enumerate(fieldnames(typeof(line)))
-                field_index > 1 && print(io, ",")
-                write_field(io, getfield(line, field))
+        for i in 1:N
+            for port in data
+                if (i > length(port.x.value))
+                    print(io, write_field(port.type, nothing) * " ")
+                else
+                    print(io, write_field(port.type, port.x.value[i]) * " ")
+                end
             end
-            line_index < length(data) && println(io)
+            println()
         end
     end
     return nothing
 end
 
-function read_test_data(::Type{T}, filename::AbstractString="results.txt",)::Vector{T} where {T<:Frame}
-    data = T[]
+function read_test_data!(output::AbstractVector{PortStim}, filename::AbstractString="results.txt",)
     open(filename, "r") do io
         for (line_number, line) in enumerate(eachline(io))
             stripped_line = strip(line)
 
             isempty(stripped_line) && continue
 
-            fields = strip.(split(stripped_line, ","))
+            fields = strip.(split(stripped_line, " "))
 
-            frame = try
-                parse_frame(T, fields)
-            catch err
-                throw(ArgumentError("Failed to parse line $line_number of \"$filename\"."*sprint(showerror, err)))
+            for i in eachindex(fields)
+                try
+                    push!(output[i].value, read_field(output[i].type, fields[i]))
+                catch err
+                    throw(ArgumentError("Failed to parse field $i of line $line_number of \"$filename\"."*sprint(showerror, err)))
+                end
             end
-            push!(data, frame)
         end
     end
     return data
 end
 
 
-generic_value(value::Integer) = string(value)
-generic_value(value::Bool) = value ? "'1'" : "'0'"
-generic_value(value::String) = value
-generic_value(value::BitArray) = "\""*join(Int.(value))*"\""
-
-function convert_generics(generics::Generics)::Vector{String}
+function convert_generics(generics::AbstractVector{Generic})::Vector{String}
     generics_strings = String[]
-    for generic in fieldnames(typeof(generics))
-        value = getfield(generics, generic)
-        push!(generics_strings, "-g$(generic)=$(generic_value(value))")
+    for generic in generics
+        push!(generics_strings, "-g$(generic)=$(write_field(generic.type,generic.value))")
     end
     return generics_strings
 end
 
 
-function GHDL_build(testbench::Testbench)::Nothing
+function GHDL_build(sim::Simulation)::Nothing
 
-    build_directory = abspath(testbench.build_directory)
+    build_directory = abspath(sim.build_directory)
 
-    sources = abspath.(testbench.sources)
+    sources = abspath.(sim.sources)
 
     mkpath(build_directory)
 
@@ -175,7 +149,7 @@ function GHDL_build(testbench::Testbench)::Nothing
 
     run(Cmd(
         `ghdl -m --std=08
-            $(testbench.name)`;
+            $(sim.name)`;
         dir=build_directory
     ))
     return nothing
@@ -183,7 +157,7 @@ end
 
 function GHDL_run(sim::Simulation)::Nothing
 
-    build_directory = abspath(sim.testbench.build_directory)
+    build_directory = abspath(sim.build_directory)
 
 
     mkpath(build_directory)
@@ -196,7 +170,7 @@ function GHDL_run(sim::Simulation)::Nothing
 
     run(Cmd(
         `ghdl -r --std=08
-            $(sim.testbench.name)
+            $(sim.name)
             $generics
             $wave_args
             --stop-time=$(sim.stop_time)`;
@@ -205,4 +179,3 @@ function GHDL_run(sim::Simulation)::Nothing
     return nothing
 end
 
-end
